@@ -43,6 +43,7 @@ CLIENT_SETS = (
     None,
     ("web_safari", "android_vr", "mweb", "ios"),
     ("android_vr",),
+    ("tv_embedded", "web_embedded"),
 )
 
 FFMPEG_BEFORE = "-nostdin -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
@@ -159,9 +160,10 @@ def _looks_snipped(entry, meta):
     return bool(expected > 60 and 0 < duration <= 45)
 
 
-def _title_score(title, meta, query, duration=None):
+def _title_score(title, meta, query, duration=None, uploader=""):
     """Note un candidat : version studio en haut, remixes et edits en bas."""
     lowered = title.lower()
+    uploader_norm = _normalize(uploader or "")
     norm = _normalize(title)
     base = _normalize(meta["title"]) if meta else _normalize(query)
     score = 0
@@ -171,8 +173,15 @@ def _title_score(title, meta, query, duration=None):
         score += 4
     elif base and base in norm:
         score += 2
-    if meta and meta["artist"] and _normalize(meta["artist"]) in norm:
-        score += 2
+    artist_norm = _normalize((meta or {}).get("artist") or "")
+    if artist_norm:
+        if artist_norm in norm:
+            score += 2
+        if uploader_norm:
+            if uploader_norm == artist_norm or artist_norm in uploader_norm:
+                score += 4
+            elif any(word in uploader_norm for word in REMIX_WORDS):
+                score -= 4
     words = [word for word in query.lower().split() if len(word) > 2]
     score += sum(1 for word in words[:3] if word in lowered)
     score -= 3 * sum(lowered.count(char) for char in "([")
@@ -279,14 +288,14 @@ def _soundcloud_track(query, requester, meta=None, size=12, attempts=4):
     """Meilleur résultat SoundCloud jouable en entier, originale en tete."""
     ranked = sorted(
         _soundcloud_listing(query, size),
-        key=lambda entry: _title_score(entry.get("title") or "", meta, query, entry.get("duration")),
+        key=lambda entry: _title_score(entry.get("title") or "", meta, query, entry.get("duration"), entry.get("uploader")),
         reverse=True,
     )
     tried = 0
     for entry in ranked:
         if tried >= attempts:
             break
-        if _title_score(entry.get("title") or "", meta, query, entry.get("duration")) < -3:
+        if _title_score(entry.get("title") or "", meta, query, entry.get("duration"), entry.get("uploader")) < -3:
             break
         if _looks_snipped(entry, meta):
             continue
@@ -469,7 +478,7 @@ def _soundcloud_results(query, limit, meta=None):
         url = entry.get("webpage_url")
         if not url:
             continue
-        ranked.append((_title_score(entry.get("title") or "", meta, query, entry.get("duration")), entry, url))
+        ranked.append((_title_score(entry.get("title") or "", meta, query, entry.get("duration"), entry.get("uploader")), entry, url))
     ranked.sort(key=lambda item: item[0], reverse=True)
     results = []
     for score, entry, url in ranked:

@@ -5,6 +5,7 @@ import discord
 from discord.ext import commands
 
 import config
+import cookies
 import diag
 import modes
 import taps
@@ -35,6 +36,7 @@ HELP_TEXT = """**Mode**
 `{p}rejoin` — coupe et refait le handshake vocal E2EE
 `{p}test` — sinus de test + compte des paquets envoyes
 `{p}diag` — etat audio (opus, ffmpeg, e2ee, paquets, erreurs)
+`{p}cookies` — installe un cookies.txt deja epingle
 `{p}ping` / `{p}help`"""
 
 SEARCH_TTL = 120
@@ -454,6 +456,21 @@ class Music(commands.Cog):
         session = getattr(conn, "dave_session", None)
         ready = getattr(session, "ready", None)
         await note.edit(content=f"🔁 Reconnecte. dave ready={ready} — `{config.PREFIX}test` pour verifier.")
+
+    @commands.command(name="cookies", aliases=["ytb", "youtube"])
+    async def cookies_cmd(self, ctx):
+        if config.COOKIES_PATH:
+            return await ctx.send("🍪 Cookies actifs : YouTube passe en premier.")
+        note = await ctx.send("🍪 Recherche d'un cookies.txt epingle...")
+        found = await cookies.restore(self.bot)
+        if found:
+            return await note.edit(content="🍪 Cookies installes : prochaine recherche via YouTube, `!play` pour tester.")
+        await note.edit(
+            content=(
+                "❌ Aucun cookies.txt epingle. Depose le fichier `cookies.txt` dans ce salon "
+                "(glisser-deposer) et epingle-le : il est installe tout seul."
+            )
+        )
 
     @commands.command(name="diag", aliases=["debug", "etat"])
     async def diag_cmd(self, ctx):

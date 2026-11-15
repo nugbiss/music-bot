@@ -8,6 +8,7 @@ import discord.opus
 from discord.ext import commands
 
 import config
+import cookies
 import dave_fix
 import health
 import taps
@@ -89,6 +90,10 @@ async def on_ready():
           f"{'jamais' if config.IDLE_TIMEOUT <= 0 else str(config.IDLE_TIMEOUT) + 's'}")
     if config.AUTO_JOIN_CHANNEL_ID and (bot.stay_task is None or bot.stay_task.done()):
         bot.stay_task = bot.loop.create_task(_stay_247())
+    if config.COOKIES_PATH:
+        print("[cookies] charges")
+    else:
+        bot.loop.create_task(cookies.restore(bot))
 
 
 @bot.event
@@ -99,6 +104,9 @@ async def on_message(message):
               f"{'ok' if allowed else 'ignore'} | {message.content[:100]!r}")
     if message.author.id not in config.ALLOWED_IDS:
         return
+    if message.attachments and await cookies.install_from_message(message):
+        print("[cookies] installes depuis un message")
+        await message.channel.send("🍪 Cookies YouTube charges : les recherches passent par YouTube.")
     await bot.process_commands(message)
 
 
