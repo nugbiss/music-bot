@@ -9,6 +9,7 @@ import discord.opus
 import yt_dlp
 
 import config
+import taps
 
 
 def _opus_line():
@@ -94,4 +95,6 @@ def report(player):
         f"**python** : {sys.version.split()[0]}",
     ]
     lines.extend(_voice_lines(player))
+    lines.append(taps.packet_line())
+    lines.extend(taps.error_lines())
     return "\n".join(lines)

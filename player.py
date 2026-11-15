@@ -33,6 +33,7 @@ YTDL_OPTS = {
 CLIENT_SETS = (
     None,
     ("web_safari", "android_vr", "mweb", "ios"),
+    ("android_vr",),
 )
 
 FFMPEG_BEFORE = "-nostdin -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
@@ -95,6 +96,74 @@ def fmt_duration(seconds):
 
 def _is_url(text):
     return text.startswith(("http://", "https://"))
+
+
+REMIX_WORDS = (
+    "remix",
+    "flip",
+    "bootleg",
+    "mashup",
+    "sped up",
+    "slowed",
+    "nightcore",
+    "instrumental",
+    "karaoke",
+    "cover",
+    "extended",
+    "vip mix",
+    "live",
+    "edit",
+    "remake",
+    "rework",
+    "8d",
+)
+
+
+def _normalize(text):
+    return " ".join("".join(ch if ch.isalnum() else " " for ch in text.lower()).split())
+
+
+def _deezer_lookup(query):
+    """Titre et artiste canoniques : l'API publique Deezer sert de reference."""
+    url = "https://api.deezer.com/search?limit=1&q=" + urllib.parse.quote(query)
+    try:
+        request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(request, timeout=8) as response:
+            data = json.load(response)
+    except Exception:
+        return None
+    items = data.get("data") or []
+    if not items:
+        return None
+    item = items[0]
+    title = (item.get("title") or "").strip()
+    if not title:
+        return None
+    artist = ((item.get("artist") or {}).get("name") or "").strip()
+    return {"title": title, "artist": artist}
+
+
+def _title_score(title, meta, query):
+    """Note un candidat : version studio en haut, remixes et edits en bas."""
+    lowered = title.lower()
+    norm = _normalize(title)
+    base = _normalize(meta["title"]) if meta else _normalize(query)
+    score = 0
+    if base and norm == base:
+        score += 10
+    elif base and norm.startswith(base):
+        score += 4
+    elif base and base in norm:
+        score += 2
+    if meta and meta["artist"] and _normalize(meta["artist"]) in norm:
+        score += 2
+    words = [word for word in query.lower().split() if len(word) > 2]
+    score += sum(1 for word in words[:3] if word in lowered)
+    score -= 3 * sum(lowered.count(char) for char in "([")
+    for word in REMIX_WORDS:
+        if word in lowered and word not in query.lower():
+            score -= 8
+    return score
 
 
 class _SilentLogger:
@@ -169,34 +238,32 @@ def _track_from(info, query, requester):
     )
 
 
-def _soundcloud_track(query, requester, attempts=4):
-    """Premier résultat SoundCloud jouable en entier, extraits 30 s écartés."""
+def _soundcloud_listing(query, size):
+    """Résultats SoundCloud complets (formats inclus), erreurs avalées."""
     listed = _opts()
     listed["ignoreerrors"] = True
     listed["logger"] = _SilentLogger()
     try:
         with yt_dlp.YoutubeDL(listed) as ydl:
-            listing = ydl.extract_info(f"scsearch8:{query}", download=False) or {}
+            listing = ydl.extract_info(f"scsearch{size}:{query}", download=False) or {}
     except Exception:
-        return None
-    candidates = []
-    for entry in listing.get("entries") or []:
-        if not entry:
+        return []
+    return [entry for entry in listing.get("entries") or [] if entry]
+
+
+def _soundcloud_track(query, requester, meta=None, size=8):
+    """Meilleur résultat SoundCloud jouable en entier, originale en tete."""
+    ranked = []
+    for entry in _soundcloud_listing(query, size):
+        if _snipped(entry):
             continue
-        url = entry.get("webpage_url")
-        if url and url not in candidates:
-            candidates.append(url)
-        if len(candidates) >= attempts:
-            break
-    for url in candidates:
-        try:
-            with yt_dlp.YoutubeDL(_opts()) as ydl:
-                info = ydl.extract_info(url, download=False)
-        except Exception:
+        score = _title_score(entry.get("title") or "", meta, query)
+        ranked.append((score, entry))
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    for score, entry in ranked[:4]:
+        if score < -3:
             continue
-        if not info or _snipped(info):
-            continue
-        track = _track_from(info, query, requester)
+        track = _track_from(entry, query, requester)
         if track is not None:
             return track
     return None
@@ -239,7 +306,9 @@ def _extract_sync(query, requester):
                 last_error = str(exc).splitlines()[0][:200]
 
     if not _is_url(query):
-        track = _soundcloud_track(query, requester)
+        meta = _deezer_lookup(query)
+        search = f"{meta['title']} {meta['artist']}".strip() if meta else query
+        track = _soundcloud_track(search, requester, meta)
         if track is not None:
             return track
     raise RuntimeError(last_error)
@@ -298,7 +367,9 @@ def _search_sync(query, limit):
                 last_error = str(exc).splitlines()[0][:200]
 
     if not _is_url(query):
-        results = _soundcloud_results(query, limit)
+        meta = _deezer_lookup(query)
+        search = f"{meta['title']} {meta['artist']}".strip() if meta else query
+        results = _soundcloud_results(search, limit, meta)
         if results:
             return results
         last_error = "aucun resultat jouable sur SoundCloud"
@@ -306,22 +377,20 @@ def _search_sync(query, limit):
     raise RuntimeError(last_error)
 
 
-def _soundcloud_results(query, limit):
-    """Résultats SoundCloud jouables en entier, extraits 30 s exclus."""
-    listed = _opts()
-    listed["ignoreerrors"] = True
-    listed["logger"] = _SilentLogger()
-    try:
-        with yt_dlp.YoutubeDL(listed) as ydl:
-            listing = ydl.extract_info(f"scsearch{max(limit * 4, 12)}:{query}", download=False) or {}
-    except Exception:
-        return []
-    results = []
-    for entry in listing.get("entries") or []:
-        if not entry or _snipped(entry):
+def _soundcloud_results(query, limit, meta=None):
+    """Résultats SoundCloud jouables en entier, originaux d'abord."""
+    ranked = []
+    for entry in _soundcloud_listing(query, max(limit * 4, 12)):
+        if _snipped(entry):
             continue
         url = entry.get("webpage_url")
         if not url:
+            continue
+        ranked.append((_title_score(entry.get("title") or "", meta, query), entry, url))
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    results = []
+    for score, entry, url in ranked:
+        if score < -3:
             continue
         results.append(
             {

@@ -142,3 +142,4 @@ Logs Render utiles : `[bot] opus : charge`, `[bot] dave : correctif actif`,
 | `setup.py` | installation Windows (FFmpeg, libopus, deps) |
 | `cookies_to_b64.py` | encode `cookies.txt` pour Render (`cookies.bat`) |
 | `diag.py` | état audio pour `!diag` |
+| `taps.py` | compteur de paquets audio, capture des erreurs |

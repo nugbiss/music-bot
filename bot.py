@@ -10,6 +10,7 @@ from discord.ext import commands
 import config
 import dave_fix
 import health
+import taps
 from commands import Music
 from player import get_player
 
@@ -51,6 +52,7 @@ def _load_opus():
 
 OPUS_OK = _load_opus()
 DAVE_FIX_OK = dave_fix.apply()
+TAPS_OK = taps.install()
 
 bot = commands.Bot(
     command_prefix=config.PREFIX,
@@ -81,6 +83,7 @@ async def on_ready():
     print(f"[bot] serveurs : {len(bot.guilds)} | messages en console : {'oui' if config.DEBUG else 'non'}")
     print(f"[bot] opus : {'charge' if OPUS_OK else 'ABSENT - installe libs/libopus-0.x64.dll'}")
     print(f"[bot] dave : {'correctif actif' if DAVE_FIX_OK else 'non applique'}")
+    print(f"[bot] sonde vocale : {'active' if TAPS_OK else 'inactive'}")
     print(f"[bot] 24/7 : {'salon ' + str(config.AUTO_JOIN_CHANNEL_ID) if config.AUTO_JOIN_CHANNEL_ID else 'desactive'}"
           f" | ring : {'oui' if config.RING else 'non'} | inactivite : "
           f"{'jamais' if config.IDLE_TIMEOUT <= 0 else str(config.IDLE_TIMEOUT) + 's'}")
