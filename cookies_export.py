@@ -101,6 +101,37 @@ def profiles(root):
     return found
 
 
+def firefox_profiles():
+    root = os.path.join(ROAM, r"Mozilla\Firefox\Profiles")
+    found = glob.glob(os.path.join(root, "*", "cookies.sqlite"))
+    return [(os.path.dirname(p), p) for p in found]
+
+
+def read_firefox(db):
+    rows, last = None, None
+    for params in ("?mode=ro", "?mode=ro&immutable=1"):
+        try:
+            con = sqlite3.connect("file:" + db.replace("\\", "/") + params, uri=True, timeout=2)
+            try:
+                rows = con.execute(
+                    "select host, name, value, path, expiry, isSecure from moz_cookies "
+                    "where host like '%youtube.com' or host like '%google.com'"
+                ).fetchall()
+            finally:
+                con.close()
+            break
+        except sqlite3.Error as exc:
+            last = exc
+    if rows is None:
+        raise last
+    out = []
+    for host, name, value, path, expiry, secure in rows:
+        if not value or any(c in value for c in "\t\r\n"):
+            continue
+        out.append((host, name, value, path or "/", int(bool(secure)), max(int(expiry or 0), 0)))
+    return out
+
+
 def read_profile(db, key):
     rows, last = None, None
     for params in ("?mode=ro", "?mode=ro&immutable=1"):
@@ -137,6 +168,17 @@ def read_profile(db, key):
 
 def collect():
     best, notes = None, []
+    for folder, db in firefox_profiles():
+        try:
+            rows = read_firefox(db)
+        except sqlite3.Error as exc:
+            notes.append(f"Firefox / {os.path.basename(folder)} : base illisible ({exc})")
+            continue
+        score = sum(1 for row in rows if row[1] in AUTH_NAMES)
+        if score:
+            return ("Firefox", os.path.basename(folder), rows, score), notes
+        if rows and best is None:
+            best = ("Firefox", os.path.basename(folder), rows, 0)
     for label, root in BROWSERS:
         if not root or not os.path.isdir(root):
             continue
