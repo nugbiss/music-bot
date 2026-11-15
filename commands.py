@@ -29,6 +29,7 @@ HELP_TEXT = """**Mode**
 `{p}np` — titre en cours et position
 `{p}volume <0-100>` — volume
 `{p}history` — derniers titres joues
+`{p}join` — deplace le bot dans ton salon vocal
 `{p}test` — sinus de test dans le vocal
 `{p}diag` — etat audio (opus, ffmpeg, e2ee, trames)
 `{p}ping` / `{p}help`"""
@@ -378,6 +379,30 @@ class Music(commands.Cog):
         for index, track in enumerate(player.history[:10], start=1):
             lines.append(f"`{index:02d}.` {track.title} `[{fmt_duration(track.duration)}]`")
         await ctx.send("\n".join(lines))
+
+    @commands.command(name="join", aliases=["viens", "rejoins"])
+    async def join(self, ctx):
+        if ctx.guild is None:
+            return await ctx.send("❌ Serveur uniquement. En DM, `!play` connecte tout seul.")
+        voice_state = getattr(ctx.author, "voice", None)
+        if not voice_state or not voice_state.channel:
+            return await ctx.send("❌ Rejoins d'abord un salon vocal.")
+        target = voice_state.channel
+        existing = None
+        for vc in self.bot.voice_clients:
+            if getattr(vc, "guild", None) is not None and vc.guild.id == ctx.guild.id:
+                existing = vc
+                break
+        try:
+            if existing is not None:
+                if existing.channel and existing.channel.id == target.id:
+                    return await ctx.send(f"🔊 Deja dans **{target.name}**.")
+                await existing.move_to(target)
+            else:
+                await get_player(self.bot, target).connect()
+        except Exception as exc:
+            return await ctx.send(f"❌ Deplacement impossible : `{exc}`")
+        await ctx.send(f"🔊 Dans **{target.name}**. `{config.PREFIX}play` pour lancer.")
 
     @commands.command(name="test", aliases=["tonalite", "sondage"])
     async def test_audio(self, ctx):

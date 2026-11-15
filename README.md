@@ -105,6 +105,13 @@ Une IP résidentielle n'est pas bloquée : `python bot.py` en local, ou le même
 service lancé sur un PC/VPS perso. Les instances publiques Invidious/Piped ne
 sont pas une option — testées hors service ou en 403.
 
+### Les titres s'arretent au bout de 30 s
+
+SoundCloud renvoie un extrait de 30 s pour les titres sous label. Le bot detecte
+ces extraits (`cf-preview-media`, `format_id` en `_preview`) et les ecarte : il
+essaie les resultats suivants jusqu'a un flux complet, et `!search` ne propose
+que des titres jouables en entier.
+
 ## Rien ne s'entend dans le vocal
 
 Trois étapes, dans cet ordre.

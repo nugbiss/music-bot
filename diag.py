@@ -49,7 +49,10 @@ def _voice_lines(player):
     if vc is None:
         return ["vocal : pas connecte"]
     conn = getattr(vc, "_connection", None)
+    channel = getattr(vc, "channel", None)
+    label = getattr(channel, "name", None) or "appel DM"
     lines = [
+        f"salon : {label} ({getattr(channel, 'id', '?')})",
         f"vocal : connecte={vc.is_connected()} lecture={vc.is_playing()} pause={vc.is_paused()}",
     ]
     if conn is None:

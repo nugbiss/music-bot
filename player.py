@@ -97,6 +97,19 @@ def _is_url(text):
     return text.startswith(("http://", "https://"))
 
 
+class _SilentLogger:
+    """Avale les messages de yt-dlp pendant les listings (DRM, extraits)."""
+
+    def debug(self, message):
+        pass
+
+    def warning(self, message):
+        pass
+
+    def error(self, message):
+        pass
+
+
 def _opts(flat=False, clients=None):
     """Construit les options yt-dlp pour une passe d'extraction.
 
@@ -115,8 +128,82 @@ def _opts(flat=False, clients=None):
     return opts
 
 
+def _snipped(info):
+    """Vrai si SoundCloud ne renvoie qu'un extrait de 30 s (titre sous label)."""
+    for fmt in info.get("formats") or []:
+        if "preview" in str(fmt.get("format_id") or "").lower():
+            return True
+    url = str(info.get("url") or "")
+    return "cf-preview-media" in url or "/preview/" in url
+
+
+def _full_stream(info):
+    """URL de flux complète : celle par défaut si elle n'est pas un extrait."""
+    url = str(info.get("url") or "")
+    if url and "preview" not in url and "cf-preview-media" not in url:
+        return url
+    for fmt in info.get("formats") or []:
+        candidate = str(fmt.get("url") or "")
+        if not candidate:
+            continue
+        if "preview" in str(fmt.get("format_id") or "").lower():
+            continue
+        if "cf-preview-media" in candidate or "/preview/" in candidate:
+            continue
+        if fmt.get("vcodec") in (None, "none"):
+            return candidate
+    return None
+
+
+def _track_from(info, query, requester):
+    stream = _full_stream(info)
+    if not stream:
+        return None
+    return Track(
+        title=info.get("title") or query,
+        stream_url=stream,
+        webpage_url=info.get("webpage_url") or (query if _is_url(query) else None),
+        duration=info.get("duration"),
+        requester=requester,
+        uploader=info.get("uploader"),
+    )
+
+
+def _soundcloud_track(query, requester, attempts=4):
+    """Premier résultat SoundCloud jouable en entier, extraits 30 s écartés."""
+    listed = _opts()
+    listed["ignoreerrors"] = True
+    listed["logger"] = _SilentLogger()
+    try:
+        with yt_dlp.YoutubeDL(listed) as ydl:
+            listing = ydl.extract_info(f"scsearch8:{query}", download=False) or {}
+    except Exception:
+        return None
+    candidates = []
+    for entry in listing.get("entries") or []:
+        if not entry:
+            continue
+        url = entry.get("webpage_url")
+        if url and url not in candidates:
+            candidates.append(url)
+        if len(candidates) >= attempts:
+            break
+    for url in candidates:
+        try:
+            with yt_dlp.YoutubeDL(_opts()) as ydl:
+                info = ydl.extract_info(url, download=False)
+        except Exception:
+            continue
+        if not info or _snipped(info):
+            continue
+        track = _track_from(info, query, requester)
+        if track is not None:
+            return track
+    return None
+
+
 def _extract_sync(query, requester):
-    """Résout une requête en flux audio, YouTube puis SoundCloud.
+    """Résout une requête en flux audio : YouTube, puis SoundCloud en entier.
 
     Entrée : query (titre ou URL), requester (auteur de la commande).
     Sortie : Track jouable ; lève RuntimeError avec la dernière erreur sinon.
@@ -124,7 +211,7 @@ def _extract_sync(query, requester):
     if _is_url(query):
         targets = [query]
     else:
-        targets = [f"ytsearch1:{query}", f"scsearch1:{query}"]
+        targets = [f"ytsearch1:{query}"]
     last_error = "aucun resultat"
 
     for target in targets:
@@ -139,20 +226,22 @@ def _extract_sync(query, requester):
                     if not entries:
                         raise RuntimeError("aucun resultat")
                     info = entries[0]
-                stream = info.get("url")
-                if not stream:
-                    raise RuntimeError("flux audio introuvable")
-                return Track(
-                    title=info.get("title") or query,
-                    stream_url=stream,
-                    webpage_url=info.get("webpage_url") or (query if _is_url(query) else None),
-                    duration=info.get("duration"),
-                    requester=requester,
-                    uploader=info.get("uploader"),
-                )
+                if _is_url(query) and "soundcloud.com" in query and _snipped(info):
+                    track = _soundcloud_track(info.get("title") or "", requester)
+                    if track is not None:
+                        return track
+                    raise RuntimeError("titre SoundCloud limite a 30 s")
+                track = _track_from(info, query, requester)
+                if track is not None:
+                    return track
+                raise RuntimeError("flux audio introuvable")
             except Exception as exc:
                 last_error = str(exc).splitlines()[0][:200]
 
+    if not _is_url(query):
+        track = _soundcloud_track(query, requester)
+        if track is not None:
+            return track
     raise RuntimeError(last_error)
 
 
@@ -177,7 +266,7 @@ def _search_sync(query, limit):
     if _is_url(query):
         targets = [query]
     else:
-        targets = [f"ytsearch{limit}:{query}", f"scsearch{limit}:{query}"]
+        targets = [f"ytsearch{limit}:{query}"]
     last_error = "aucun resultat"
 
     for target in targets:
@@ -208,7 +297,42 @@ def _search_sync(query, limit):
             except Exception as exc:
                 last_error = str(exc).splitlines()[0][:200]
 
+    if not _is_url(query):
+        results = _soundcloud_results(query, limit)
+        if results:
+            return results
+        last_error = "aucun resultat jouable sur SoundCloud"
+
     raise RuntimeError(last_error)
+
+
+def _soundcloud_results(query, limit):
+    """Résultats SoundCloud jouables en entier, extraits 30 s exclus."""
+    listed = _opts()
+    listed["ignoreerrors"] = True
+    listed["logger"] = _SilentLogger()
+    try:
+        with yt_dlp.YoutubeDL(listed) as ydl:
+            listing = ydl.extract_info(f"scsearch{max(limit * 4, 12)}:{query}", download=False) or {}
+    except Exception:
+        return []
+    results = []
+    for entry in listing.get("entries") or []:
+        if not entry or _snipped(entry):
+            continue
+        url = entry.get("webpage_url")
+        if not url:
+            continue
+        results.append(
+            {
+                "title": entry.get("title") or "Sans titre",
+                "url": url,
+                "duration": entry.get("duration"),
+            }
+        )
+        if len(results) >= limit:
+            break
+    return results
 
 
 async def resolve(query, requester=None):
@@ -258,6 +382,17 @@ class ChannelPlayer:
         return None
 
     @property
+    def guild_voice(self):
+        """Premier client vocal du même serveur, quel que soit le salon."""
+        guild = getattr(self.channel, "guild", None)
+        if guild is None:
+            return self.voice
+        for vc in self.bot.voice_clients:
+            if getattr(vc, "guild", None) is not None and vc.guild.id == guild.id:
+                return vc
+        return None
+
+    @property
     def is_playing(self):
         vc = self.voice
         return bool(vc and (vc.is_playing() or vc.is_paused()))
@@ -286,7 +421,7 @@ class ChannelPlayer:
     async def keepalive(self):
         delay = 5
         while not self.bot.is_closed():
-            vc = self.voice
+            vc = self.guild_voice
             if vc is None or not vc.is_connected():
                 try:
                     await self.connect()
