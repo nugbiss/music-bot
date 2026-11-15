@@ -122,7 +122,8 @@ Trois étapes, dans cet ordre.
    E2EE.
 2. `!diag` — affiche la version d'opus, FFmpeg, yt-dlp, davey, le protocole E2EE,
    `can_encrypt`, l'état de la session DAVE et le nombre de trames envoyées.
-3. `!np` — le compteur `trame` monte d'environ 50 par seconde pendant la lecture.
+3. `!test` affiche ensuite le nombre de paquets envoyes et l'etat E2EE ; `!rejoin` coupe et refait le handshake DAVE complet.
+4. `!np` — le compteur `trame` monte d'environ 50 par seconde pendant la lecture.
    Il reste à 0 → FFmpeg ne lit pas le flux. Il monte et le silence persiste →
    E2EE : la ligne `e2ee : ... can_encrypt=False` le confirme.
 

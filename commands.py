@@ -1,3 +1,4 @@
+import asyncio
 import time
 
 import discord
@@ -6,6 +7,7 @@ from discord.ext import commands
 import config
 import diag
 import modes
+import taps
 from player import find_player_in_guild, fmt_duration, get_player, resolve, search
 
 HELP_TEXT = """**Mode**
@@ -30,8 +32,9 @@ HELP_TEXT = """**Mode**
 `{p}volume <0-100>` — volume
 `{p}history` — derniers titres joues
 `{p}join` — deplace le bot dans ton salon vocal
-`{p}test` — sinus de test dans le vocal
-`{p}diag` — etat audio (opus, ffmpeg, e2ee, trames)
+`{p}rejoin` — coupe et refait le handshake vocal E2EE
+`{p}test` — sinus de test + compte des paquets envoyes
+`{p}diag` — etat audio (opus, ffmpeg, e2ee, paquets, erreurs)
 `{p}ping` / `{p}help`"""
 
 SEARCH_TTL = 120
@@ -412,10 +415,45 @@ class Music(commands.Cog):
             player = await self._attach(ctx)
             if player is None:
                 return await note.edit(content="❌ Pas de salon vocal joignable.")
+        before = taps.PACKETS["count"]
         ok, error = await player.play_tone()
         if not ok:
             return await note.edit(content=f"❌ Test vocal impossible : `{error}`")
-        await note.edit(content="🔔 Sinus 440 Hz pendant 8 s. Rien ? → `" + config.PREFIX + "diag`.")
+        await note.edit(content="🔔 Sinus 440 Hz, 12 s. Compte des paquets dans 14 s...")
+        await asyncio.sleep(14)
+        sent = taps.PACKETS["count"] - before
+        conn = getattr(player.voice, "_connection", None) if player.voice else None
+        can_encrypt = bool(getattr(conn, "can_encrypt", False))
+        verdict = "le son sort du bot" if sent > 300 else "aucun paquet : le thread audio est mort"
+        await note.edit(
+            content=(
+                f"🔔 Test fini — {sent} paquets envoyes sur 12 s "
+                f"({int(sent / 12)}/s), e2ee={can_encrypt} → {verdict}."
+            )
+        )
+
+    @commands.command(name="rejoin", aliases=["reco"])
+    async def rejoin(self, ctx):
+        """Coupe la connexion vocale et refait le handshake E2EE complet."""
+        player = _control_player(self.bot, ctx)
+        target = _play_target(ctx)
+        if player is None and isinstance(target, discord.abc.GuildChannel):
+            player = get_player(self.bot, target)
+        if player is None:
+            return await ctx.send("❌ Aucune connexion vocale a refaire.")
+        note = await ctx.send("🔁 Deconnexion puis nouveau handshake E2EE...")
+        try:
+            vc = player.voice or player.guild_voice
+            if vc is not None:
+                await vc.disconnect(force=True)
+            await asyncio.sleep(1.5)
+            await player.connect()
+        except Exception as exc:
+            return await note.edit(content=f"❌ Reconnexion impossible : `{exc}`")
+        conn = getattr(player.voice, "_connection", None) if player.voice else None
+        session = getattr(conn, "dave_session", None)
+        ready = getattr(session, "ready", None)
+        await note.edit(content=f"🔁 Reconnecte. dave ready={ready} — `{config.PREFIX}test` pour verifier.")
 
     @commands.command(name="diag", aliases=["debug", "etat"])
     async def diag_cmd(self, ctx):

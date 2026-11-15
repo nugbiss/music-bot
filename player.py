@@ -24,10 +24,19 @@ YTDL_OPTS = {
     "nocheckcertificate": True,
     "skip_download": True,
     "source_address": "0.0.0.0",
-    "socket_timeout": 15,
-    "retries": 3,
-    "extractor_retries": 3,
+    "socket_timeout": 8,
+    "retries": 1,
+    "extractor_retries": 1,
 }
+
+# YouTube bloque l'IP de Render : inutile de repayer trois passes toutes les 30 s.
+_YT_BLOCK = {"until": 0.0}
+_YT_COOLDOWN = 900
+_YOUTUBE_TIMEOUT = 25
+
+# Même requête relancée deux fois en quelques minutes : on renvoie le résultat.
+_CACHE = {}
+_CACHE_TTL = 600
 
 # Certains clients YouTube passent mieux depuis une IP de datacenter (Render).
 CLIENT_SETS = (
@@ -140,10 +149,17 @@ def _deezer_lookup(query):
     if not title:
         return None
     artist = ((item.get("artist") or {}).get("name") or "").strip()
-    return {"title": title, "artist": artist}
+    return {"title": title, "artist": artist, "duration": item.get("duration") or 0}
 
 
-def _title_score(title, meta, query):
+def _looks_snipped(entry, meta):
+    """Repère un extrait 30 s sans appel réseau, via la durée Deezer."""
+    duration = entry.get("duration") or 0
+    expected = (meta or {}).get("duration") or 0
+    return bool(expected > 60 and 0 < duration <= 45)
+
+
+def _title_score(title, meta, query, duration=None):
     """Note un candidat : version studio en haut, remixes et edits en bas."""
     lowered = title.lower()
     norm = _normalize(title)
@@ -160,9 +176,17 @@ def _title_score(title, meta, query):
     words = [word for word in query.lower().split() if len(word) > 2]
     score += sum(1 for word in words[:3] if word in lowered)
     score -= 3 * sum(lowered.count(char) for char in "([")
+    if " x " in lowered and " x " not in query.lower():
+        score -= 3
     for word in REMIX_WORDS:
         if word in lowered and word not in query.lower():
             score -= 8
+    expected = (meta or {}).get("duration") or 0
+    if expected and duration:
+        if duration > expected * 1.8:
+            score -= 5
+        elif abs(duration - expected) > expected * 0.45:
+            score -= 2
     return score
 
 
@@ -239,8 +263,8 @@ def _track_from(info, query, requester):
 
 
 def _soundcloud_listing(query, size):
-    """Résultats SoundCloud complets (formats inclus), erreurs avalées."""
-    listed = _opts()
+    """Résultats SoundCloud en mode léger : un seul appel réseau."""
+    listed = _opts(flat=True)
     listed["ignoreerrors"] = True
     listed["logger"] = _SilentLogger()
     try:
@@ -248,25 +272,55 @@ def _soundcloud_listing(query, size):
             listing = ydl.extract_info(f"scsearch{size}:{query}", download=False) or {}
     except Exception:
         return []
-    return [entry for entry in listing.get("entries") or [] if entry]
+    return [entry for entry in listing.get("entries") or [] if entry and entry.get("webpage_url")]
 
 
-def _soundcloud_track(query, requester, meta=None, size=8):
+def _soundcloud_track(query, requester, meta=None, size=12, attempts=4):
     """Meilleur résultat SoundCloud jouable en entier, originale en tete."""
-    ranked = []
-    for entry in _soundcloud_listing(query, size):
-        if _snipped(entry):
+    ranked = sorted(
+        _soundcloud_listing(query, size),
+        key=lambda entry: _title_score(entry.get("title") or "", meta, query, entry.get("duration")),
+        reverse=True,
+    )
+    tried = 0
+    for entry in ranked:
+        if tried >= attempts:
+            break
+        if _title_score(entry.get("title") or "", meta, query, entry.get("duration")) < -3:
+            break
+        if _looks_snipped(entry, meta):
             continue
-        score = _title_score(entry.get("title") or "", meta, query)
-        ranked.append((score, entry))
-    ranked.sort(key=lambda item: item[0], reverse=True)
-    for score, entry in ranked[:4]:
-        if score < -3:
+        tried += 1
+        try:
+            with yt_dlp.YoutubeDL(_opts()) as ydl:
+                info = ydl.extract_info(entry["webpage_url"], download=False)
+        except Exception:
             continue
-        track = _track_from(entry, query, requester)
+        if not info or _snipped(info):
+            continue
+        track = _track_from(info, query, requester)
         if track is not None:
             return track
     return None
+
+
+def _cache_get(key):
+    item = _CACHE.get(key)
+    if item and time.time() - item[0] < _CACHE_TTL:
+        return item[1]
+    return None
+
+
+def _cache_put(key, value):
+    _CACHE[key] = (time.time(), value)
+    if len(_CACHE) > 200:
+        oldest = sorted(_CACHE.items(), key=lambda pair: pair[1][0])[:60]
+        for name, _ in oldest:
+            _CACHE.pop(name, None)
+
+
+def _youtube_blocked():
+    return time.time() < _YT_BLOCK["until"]
 
 
 def _extract_sync(query, requester):
@@ -275,41 +329,56 @@ def _extract_sync(query, requester):
     Entrée : query (titre ou URL), requester (auteur de la commande).
     Sortie : Track jouable ; lève RuntimeError avec la dernière erreur sinon.
     """
-    if _is_url(query):
-        targets = [query]
-    else:
-        targets = [f"ytsearch1:{query}"]
-    last_error = "aucun resultat"
+    cache_key = f"t:{query.lower()}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
 
-    for target in targets:
-        for clients in CLIENT_SETS:
-            try:
-                with yt_dlp.YoutubeDL(_opts(clients=clients)) as ydl:
-                    info = ydl.extract_info(target, download=False)
-                if not info:
+    last_error = "aucun resultat"
+    if _is_url(query):
+        passes = [(query, clients) for clients in CLIENT_SETS]
+    elif _youtube_blocked():
+        passes = []
+    else:
+        passes = [(f"ytsearch1:{query}", clients) for clients in CLIENT_SETS]
+
+    deadline = time.time() + _YOUTUBE_TIMEOUT
+    for target, clients in passes:
+        if time.time() > deadline:
+            break
+        try:
+            with yt_dlp.YoutubeDL(_opts(clients=clients)) as ydl:
+                info = ydl.extract_info(target, download=False)
+            if not info:
+                raise RuntimeError("aucun resultat")
+            if "entries" in info:
+                entries = [entry for entry in info["entries"] if entry]
+                if not entries:
                     raise RuntimeError("aucun resultat")
-                if "entries" in info:
-                    entries = [entry for entry in info["entries"] if entry]
-                    if not entries:
-                        raise RuntimeError("aucun resultat")
-                    info = entries[0]
-                if _is_url(query) and "soundcloud.com" in query and _snipped(info):
-                    track = _soundcloud_track(info.get("title") or "", requester)
-                    if track is not None:
-                        return track
-                    raise RuntimeError("titre SoundCloud limite a 30 s")
-                track = _track_from(info, query, requester)
+                info = entries[0]
+            if _is_url(query) and "soundcloud.com" in query and _snipped(info):
+                track = _soundcloud_track(info.get("title") or "", requester)
                 if track is not None:
+                    _cache_put(cache_key, track)
                     return track
-                raise RuntimeError("flux audio introuvable")
-            except Exception as exc:
-                last_error = str(exc).splitlines()[0][:200]
+                raise RuntimeError("titre SoundCloud limite a 30 s")
+            track = _track_from(info, query, requester)
+            if track is not None:
+                _cache_put(cache_key, track)
+                _YT_BLOCK["until"] = 0.0
+                return track
+            raise RuntimeError("flux audio introuvable")
+        except Exception as exc:
+            last_error = str(exc).splitlines()[0][:200]
 
     if not _is_url(query):
+        if passes:
+            _YT_BLOCK["until"] = time.time() + _YT_COOLDOWN
         meta = _deezer_lookup(query)
         search = f"{meta['title']} {meta['artist']}".strip() if meta else query
         track = _soundcloud_track(search, requester, meta)
         if track is not None:
+            _cache_put(cache_key, track)
             return track
     raise RuntimeError(last_error)
 
@@ -332,45 +401,59 @@ def _search_sync(query, limit):
     Entrée : query (titre ou URL), limit (nombre de résultats).
     Sortie : liste de dicts {title, url, duration}.
     """
-    if _is_url(query):
-        targets = [query]
-    else:
-        targets = [f"ytsearch{limit}:{query}"]
-    last_error = "aucun resultat"
+    cache_key = f"s:{limit}:{query.lower()}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
 
-    for target in targets:
-        for clients in CLIENT_SETS:
-            try:
-                with yt_dlp.YoutubeDL(_opts(flat=True, clients=clients)) as ydl:
-                    info = ydl.extract_info(target, download=False)
-                entries = (info or {}).get("entries") or []
-                results = []
-                for entry in entries:
-                    if not entry:
-                        continue
-                    url = entry.get("webpage_url") or entry.get("url")
-                    if not url:
-                        continue
-                    results.append(
-                        {
-                            "title": entry.get("title") or "Sans titre",
-                            "url": url,
-                            "duration": entry.get("duration"),
-                        }
-                    )
-                    if len(results) >= limit:
-                        break
-                if results:
-                    return results
-                last_error = "aucun resultat"
-            except Exception as exc:
-                last_error = str(exc).splitlines()[0][:200]
+    last_error = "aucun resultat"
+    if _is_url(query):
+        passes = [(query, clients) for clients in CLIENT_SETS]
+    elif _youtube_blocked():
+        passes = []
+    else:
+        passes = [(f"ytsearch{limit}:{query}", clients) for clients in CLIENT_SETS]
+
+    deadline = time.time() + _YOUTUBE_TIMEOUT
+    for target, clients in passes:
+        if time.time() > deadline:
+            break
+        try:
+            with yt_dlp.YoutubeDL(_opts(flat=True, clients=clients)) as ydl:
+                info = ydl.extract_info(target, download=False)
+            entries = (info or {}).get("entries") or []
+            results = []
+            for entry in entries:
+                if not entry:
+                    continue
+                url = entry.get("webpage_url") or entry.get("url")
+                if not url:
+                    continue
+                results.append(
+                    {
+                        "title": entry.get("title") or "Sans titre",
+                        "url": url,
+                        "duration": entry.get("duration"),
+                    }
+                )
+                if len(results) >= limit:
+                    break
+            if results:
+                _cache_put(cache_key, results)
+                _YT_BLOCK["until"] = 0.0
+                return results
+            last_error = "aucun resultat"
+        except Exception as exc:
+            last_error = str(exc).splitlines()[0][:200]
 
     if not _is_url(query):
+        if passes:
+            _YT_BLOCK["until"] = time.time() + _YT_COOLDOWN
         meta = _deezer_lookup(query)
         search = f"{meta['title']} {meta['artist']}".strip() if meta else query
         results = _soundcloud_results(search, limit, meta)
         if results:
+            _cache_put(cache_key, results)
             return results
         last_error = "aucun resultat jouable sur SoundCloud"
 
@@ -381,12 +464,12 @@ def _soundcloud_results(query, limit, meta=None):
     """Résultats SoundCloud jouables en entier, originaux d'abord."""
     ranked = []
     for entry in _soundcloud_listing(query, max(limit * 4, 12)):
-        if _snipped(entry):
+        if _snipped(entry) or _looks_snipped(entry, meta):
             continue
         url = entry.get("webpage_url")
         if not url:
             continue
-        ranked.append((_title_score(entry.get("title") or "", meta, query), entry, url))
+        ranked.append((_title_score(entry.get("title") or "", meta, query, entry.get("duration")), entry, url))
     ranked.sort(key=lambda item: item[0], reverse=True)
     results = []
     for score, entry, url in ranked:
@@ -576,7 +659,7 @@ class ChannelPlayer:
             self.current = None
             self.bot.loop.create_task(self._advance())
 
-    async def play_tone(self, seconds=8):
+    async def play_tone(self, seconds=12):
         """Joue un sinus local : isole le pipeline vocal de l'extraction web."""
         vc = self.voice
         if vc is None:
@@ -584,7 +667,7 @@ class ChannelPlayer:
         if vc.is_playing() or vc.is_paused():
             vc.stop()
         await self._wait_encryption(vc)
-        path = os.path.join(tempfile.gettempdir(), "ojbs-tone.wav")
+        path = os.path.join(tempfile.gettempdir(), f"ojbs-tone-{seconds}.wav")
         if not os.path.isfile(path):
             make_tone(path, seconds=seconds)
         try:
