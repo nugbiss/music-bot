@@ -4,6 +4,7 @@ import discord
 from discord.ext import commands
 
 import config
+import diag
 import modes
 from player import find_player_in_guild, fmt_duration, get_player, resolve, search
 
@@ -28,6 +29,8 @@ HELP_TEXT = """**Mode**
 `{p}np` — titre en cours et position
 `{p}volume <0-100>` — volume
 `{p}history` — derniers titres joues
+`{p}test` — sinus de test dans le vocal
+`{p}diag` — etat audio (opus, ffmpeg, e2ee, trames)
 `{p}ping` / `{p}help`"""
 
 SEARCH_TTL = 120
@@ -286,10 +289,11 @@ class Music(commands.Cog):
             return await ctx.send("❌ Rien en lecture.")
         track = player.current
         position = player.elapsed
+        frames = player.frames
         if position is not None:
-            text = f"🎵 **{track.title}** `[{fmt_duration(position)} / {fmt_duration(track.duration)}]` — volume {int(player.volume * 100)}%"
+            text = f"🎵 **{track.title}** `[{fmt_duration(position)} / {fmt_duration(track.duration)}]` — volume {int(player.volume * 100)}% — trame {frames}"
         else:
-            text = f"🎵 **{track.title}** `[{fmt_duration(track.duration)}]` — volume {int(player.volume * 100)}%"
+            text = f"🎵 **{track.title}** `[{fmt_duration(track.duration)}]` — volume {int(player.volume * 100)}% — trame {frames}"
         if player.loop != "off":
             text += f"\n🔁 Boucle : {LOOP_LABELS[player.loop]}"
         if track.uploader:
@@ -374,6 +378,24 @@ class Music(commands.Cog):
         for index, track in enumerate(player.history[:10], start=1):
             lines.append(f"`{index:02d}.` {track.title} `[{fmt_duration(track.duration)}]`")
         await ctx.send("\n".join(lines))
+
+    @commands.command(name="test", aliases=["tonalite", "sondage"])
+    async def test_audio(self, ctx):
+        note = await ctx.send("🔔 Preparation du sinus de test...")
+        player = _control_player(self.bot, ctx)
+        if player is None:
+            player = await self._attach(ctx)
+            if player is None:
+                return await note.edit(content="❌ Pas de salon vocal joignable.")
+        ok, error = await player.play_tone()
+        if not ok:
+            return await note.edit(content=f"❌ Test vocal impossible : `{error}`")
+        await note.edit(content="🔔 Sinus 440 Hz pendant 8 s. Rien ? → `" + config.PREFIX + "diag`.")
+
+    @commands.command(name="diag", aliases=["debug", "etat"])
+    async def diag_cmd(self, ctx):
+        text = diag.report(_control_player(self.bot, ctx))
+        await ctx.send(text[:1990])
 
     @commands.command(name="ping", aliases=["latence", "pong"])
     async def ping(self, ctx):

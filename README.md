@@ -105,6 +105,23 @@ Une IP résidentielle n'est pas bloquée : `python bot.py` en local, ou le même
 service lancé sur un PC/VPS perso. Les instances publiques Invidious/Piped ne
 sont pas une option — testées hors service ou en 403.
 
+## Rien ne s'entend dans le vocal
+
+Trois étapes, dans cet ordre.
+
+1. `!test` — le bot génère un sinus 440 Hz en local et le joue. Aucun réseau,
+   aucune extraction : si tu l'entends, le pipeline vocal est bon et le problème
+   est dans la source ; si tu n'entends rien, c'est opus, FFmpeg ou le chiffrement
+   E2EE.
+2. `!diag` — affiche la version d'opus, FFmpeg, yt-dlp, davey, le protocole E2EE,
+   `can_encrypt`, l'état de la session DAVE et le nombre de trames envoyées.
+3. `!np` — le compteur `trame` monte d'environ 50 par seconde pendant la lecture.
+   Il reste à 0 → FFmpeg ne lit pas le flux. Il monte et le silence persiste →
+   E2EE : la ligne `e2ee : ... can_encrypt=False` le confirme.
+
+Logs Render utiles : `[bot] opus : charge`, `[bot] dave : correctif actif`,
+`[player] E2EE actif`, `[player] erreur flux : ...`.
+
 ## Fichiers
 
 | fichier | rôle |
@@ -117,3 +134,4 @@ sont pas une option — testées hors service ou en 403.
 | `modes.py` | état du mode musique |
 | `setup.py` | installation Windows (FFmpeg, libopus, deps) |
 | `cookies_to_b64.py` | encode `cookies.txt` pour Render (`cookies.bat`) |
+| `diag.py` | état audio pour `!diag` |

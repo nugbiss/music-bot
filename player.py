@@ -1,9 +1,14 @@
 import asyncio
 import json
+import math
+import os
 import random
+import struct
+import tempfile
 import time
 import urllib.parse
 import urllib.request
+import wave
 
 import discord
 import yt_dlp
@@ -47,6 +52,34 @@ class Track:
 
     def __repr__(self):
         return f"<Track {self.title!r}>"
+
+
+class CountedVolume(discord.PCMVolumeTransformer):
+    """Transformeur de volume qui compte les trames PCM lues par Discord."""
+
+    def __init__(self, original, volume=0.5):
+        super().__init__(original, volume=volume)
+        self.frames = 0
+
+    def read(self):
+        data = super().read()
+        if data:
+            self.frames += 1
+        return data
+
+
+def make_tone(path, seconds=8, freq=440):
+    """Écrit un sinus mono 48 kHz s16le dans path (test du pipeline vocal)."""
+    rate = 48000
+    amplitude = 12000
+    with wave.open(path, "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(rate)
+        payload = bytearray()
+        for index in range(rate * seconds):
+            payload += struct.pack("<h", int(amplitude * math.sin(2 * math.pi * freq * index / rate)))
+        out.writeframes(bytes(payload))
 
 
 def fmt_duration(seconds):
@@ -214,6 +247,7 @@ class ChannelPlayer:
         self._idle_task = None
         self._guard_task = None
         self._lock = asyncio.Lock()
+        self._source = None
 
     @property
     def voice(self):
@@ -227,6 +261,10 @@ class ChannelPlayer:
     def is_playing(self):
         vc = self.voice
         return bool(vc and (vc.is_playing() or vc.is_paused()))
+
+    @property
+    def frames(self):
+        return getattr(self._source, "frames", 0)
 
     @property
     def elapsed(self):
@@ -314,7 +352,7 @@ class ChannelPlayer:
         if start_at:
             before = f"{FFMPEG_BEFORE} -ss {int(start_at)}"
         try:
-            source = discord.PCMVolumeTransformer(
+            source = CountedVolume(
                 discord.FFmpegPCMAudio(
                     track.stream_url,
                     executable=config.FFMPEG_PATH,
@@ -323,6 +361,7 @@ class ChannelPlayer:
                 ),
                 volume=self.volume,
             )
+            self._source = source
             vc.play(source, after=self._after)
             self._arm_guard()
             if not (self.history and self.history[0] is track):
@@ -332,6 +371,29 @@ class ChannelPlayer:
             print(f"[player] lecture impossible : {exc}")
             self.current = None
             self.bot.loop.create_task(self._advance())
+
+    async def play_tone(self, seconds=8):
+        """Joue un sinus local : isole le pipeline vocal de l'extraction web."""
+        vc = self.voice
+        if vc is None:
+            return False, "pas de connexion vocale"
+        if vc.is_playing() or vc.is_paused():
+            vc.stop()
+        await self._wait_encryption(vc)
+        path = os.path.join(tempfile.gettempdir(), "ojbs-tone.wav")
+        if not os.path.isfile(path):
+            make_tone(path, seconds=seconds)
+        try:
+            source = CountedVolume(
+                discord.FFmpegPCMAudio(path, executable=config.FFMPEG_PATH, options=FFMPEG_OPTS),
+                volume=self.volume,
+            )
+            self._source = source
+            self._suppress = True
+            vc.play(source, after=self._after)
+        except Exception as exc:
+            return False, str(exc)
+        return True, None
 
     async def _wait_encryption(self, vc, timeout=5.0):
         conn = getattr(vc, "_connection", None)
