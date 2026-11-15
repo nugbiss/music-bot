@@ -77,6 +77,8 @@ def _opts(flat=False, clients=None):
         opts["extractor_args"] = {"youtube": {"player_client": list(clients)}}
     if config.COOKIES_PATH:
         opts["cookiefile"] = config.COOKIES_PATH
+    if config.PROXY_URL:
+        opts["proxy"] = config.PROXY_URL
     return opts
 
 

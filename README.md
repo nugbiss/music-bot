@@ -78,15 +78,28 @@ ne change.
 
 Les IP de datacenter déclenchent « Sign in to confirm you're not a bot ». Le bot
 essaie déjà deux jeux de clients YouTube, puis affiche l'erreur exacte dans
-Discord. Pour passer au-delà, il faut des cookies d'un compte YouTube :
+Discord. Trois sorties possibles, dans l'ordre de simplicité.
+
+**1. Cookies d'un compte YouTube (gratuit, le plus fiable)**
 
 1. Connecté à YouTube dans le navigateur, exporte `cookies.txt` (extension
    « Get cookies.txt LOCALLY »).
 2. Encode-le en base64 :
    `python -c "import base64;print(base64.b64encode(open('cookies.txt','rb').read()).decode())"`
-3. Render → Environment → nouvelle variable `YTDL_COOKIES_B64` = la chaîne obtenue.
+3. Render → Environment → `YTDL_COOKIES_B64` = la chaîne obtenue.
 4. Manual Deploy. `config.py` écrit le fichier dans le dossier temporaire au
    démarrage et yt-dlp l'utilise.
+
+**2. Proxy sortant (autre IP pour YouTube)**
+
+Render → Environment → `PROXY_URL` = `http://user:pass@host:port` ou
+`socks5://host:port`. yt-dlp fait passer toute l'extraction par cette sortie.
+
+**3. Faire tourner le bot chez toi**
+
+Une IP résidentielle n'est pas bloquée : `python bot.py` en local, ou le même
+service lancé sur un PC/VPS perso. Les instances publiques Invidious/Piped ne
+sont pas une option — testées hors service ou en 403.
 
 ## Fichiers
 

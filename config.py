@@ -67,6 +67,9 @@ def _write_cookies():
 
 COOKIES_PATH = _write_cookies()
 
+# Proxy sortant pour yt-dlp : http://user:pass@host:port ou socks5://host:port
+PROXY_URL = os.getenv("PROXY_URL", "").strip() or None
+
 
 def _resolve_ffmpeg():
     if os.path.isfile(_LOCAL_FFMPEG):
