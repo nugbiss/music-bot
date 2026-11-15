@@ -12,7 +12,9 @@ import glob
 import json
 import os
 import sqlite3
+import subprocess
 import sys
+import time
 
 import aesgcm
 
@@ -34,6 +36,14 @@ AUTH_NAMES = {
     "SID", "HSID", "SSID", "APISID", "SAPISID",
     "LOGIN_INFO", "SIDCC", "SSIDCC",
     "__Secure-1PSID", "__Secure-3PSID", "__Secure-1PAPISID", "__Secure-3PAPISID",
+}
+
+PROCESSES = {
+    "Edge": "msedge",
+    "Brave": "brave",
+    "Chrome": "chrome",
+    "Opera GX": "opera",
+    "Opera": "opera",
 }
 
 
@@ -175,28 +185,66 @@ def write_netscape(rows):
     return len(lines)
 
 
-def main():
-    found, notes = collect()
-    for note in notes:
-        print(f"  ! {note}")
-    if not found:
-        print("Aucun profil lisible. Ouvre Edge, connecte-toi sur youtube.com, ferme Edge, relance.")
-        return 1
-    label, profile, rows, score = found
-    total = write_netscape(rows)
-    print(f"Navigateur : {label} / {profile}")
-    print(f"Cookies youtube.com + google.com : {total}")
-    print("Session connectee : " + ("oui" if score else f"AUCUNE - connecte-toi sur youtube.com dans {label}"))
-    print(f"Fichier : {OUT_PATH}")
-    if not score:
-        return 2
-    print("OK - glisse ce fichier en piece jointe dans la conversation Discord du bot.")
-    return 0
+def is_running(exe):
+    try:
+        out = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {exe}.exe", "/NH"],
+                             capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return exe.lower() in out.lower()
+
+
+def close_browsers():
+    killed = []
+    for label, exe in PROCESSES.items():
+        if not any(label == name for name, _ in BROWSERS):
+            continue
+        if is_running(exe) and exe not in killed:
+            subprocess.run(["taskkill", "/IM", f"{exe}.exe", "/F"], capture_output=True, timeout=15)
+            killed.append(exe)
+    if killed:
+        time.sleep(2)
+    return killed
+
+
+def reopen_browsers(killed):
+    for exe in killed:
+        subprocess.run(["cmd", "/c", "start", "", exe], capture_output=True, timeout=15)
+
+
+def main(force_close=False):
+    killed = close_browsers() if force_close else []
+    try:
+        found, notes = collect()
+        for note in notes:
+            print(f"  ! {note}")
+        if not found:
+            locked = any("illisible" in note for note in notes)
+            if locked and not force_close:
+                print("La base des cookies est verrouillee par le navigateur ouvert.")
+                return 4
+            if locked:
+                print("Bases toujours verrouillees apres fermeture (autre profil ou antivirus).")
+                return 1
+            print("Aucun profil de navigateur trouve. Ouvre Edge, connecte-toi sur youtube.com, relance.")
+            return 1
+        label, profile, rows, score = found
+        total = write_netscape(rows)
+        print(f"Navigateur : {label} / {profile}")
+        print(f"Cookies youtube.com + google.com : {total}")
+        print("Session connectee : " + ("oui" if score else f"AUCUNE - connecte-toi sur youtube.com dans {label}"))
+        print(f"Fichier : {OUT_PATH}")
+        if not score:
+            return 2
+        print("OK - glisse ce fichier en piece jointe dans la conversation Discord du bot.")
+        return 0
+    finally:
+        reopen_browsers(killed)
 
 
 if __name__ == "__main__":
     try:
-        sys.exit(main())
+        sys.exit(main("--force-close" in sys.argv[1:]))
     except Exception as exc:
         print(f"ECHEC : {type(exc).__name__} : {exc}")
         sys.exit(3)
