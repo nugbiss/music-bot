@@ -48,6 +48,8 @@ crypt32.CryptUnprotectData.argtypes = [
     ctypes.c_void_p, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(DATA_BLOB),
 ]
 crypt32.CryptUnprotectData.restype = wintypes.BOOL
+kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+kernel32.LocalFree.restype = ctypes.c_void_p
 
 
 def dpapi(data):
@@ -193,4 +195,8 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception as exc:
+        print(f"ECHEC : {type(exc).__name__} : {exc}")
+        sys.exit(3)
