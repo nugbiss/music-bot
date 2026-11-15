@@ -1,0 +1,448 @@
+import asyncio
+import json
+import random
+import time
+import urllib.parse
+import urllib.request
+
+import discord
+import yt_dlp
+
+import config
+
+YTDL_OPTS = {
+    "format": "bestaudio/best",
+    "noplaylist": True,
+    "quiet": True,
+    "no_warnings": True,
+    "default_search": "ytsearch1",
+    "nocheckcertificate": True,
+    "skip_download": True,
+    "source_address": "0.0.0.0",
+}
+
+FFMPEG_BEFORE = "-nostdin -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+FFMPEG_OPTS = "-vn"
+
+LOOP_MODES = ("off", "one", "all")
+
+
+class Track:
+    def __init__(self, title, stream_url, webpage_url=None, duration=None, requester=None, uploader=None):
+        self.title = title
+        self.stream_url = stream_url
+        self.webpage_url = webpage_url
+        self.duration = duration
+        self.requester = requester
+        self.uploader = uploader
+
+    def __repr__(self):
+        return f"<Track {self.title!r}>"
+
+
+def fmt_duration(seconds):
+    if not seconds:
+        return "live"
+    seconds = int(seconds)
+    hours, rem = divmod(seconds, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
+def _is_url(text):
+    return text.startswith(("http://", "https://"))
+
+
+def _extract_sync(query, requester):
+    target = query if _is_url(query) else f"ytsearch1:{query}"
+    with yt_dlp.YoutubeDL(YTDL_OPTS) as ydl:
+        info = ydl.extract_info(target, download=False)
+    if not info:
+        raise RuntimeError("aucun resultat")
+    if "entries" in info:
+        entries = [entry for entry in info["entries"] if entry]
+        if not entries:
+            raise RuntimeError("aucun resultat")
+        info = entries[0]
+    stream = info.get("url")
+    if not stream:
+        raise RuntimeError("flux audio introuvable")
+    return Track(
+        title=info.get("title") or query,
+        stream_url=stream,
+        webpage_url=info.get("webpage_url") or (query if _is_url(query) else None),
+        duration=info.get("duration"),
+        requester=requester,
+        uploader=info.get("uploader"),
+    )
+
+
+def _spotify_sync(url):
+    api = "https://open.spotify.com/oembed?url=" + urllib.parse.quote(url, safe="")
+    request = urllib.request.Request(api, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(request, timeout=10) as response:
+        data = json.load(response)
+    title = (data.get("title") or "").strip()
+    artist = (data.get("author_name") or "").strip()
+    if not title:
+        return None
+    return f"{title} {artist}".strip()
+
+
+def _search_sync(query, limit):
+    options = dict(YTDL_OPTS)
+    options["extract_flat"] = True
+    target = query if _is_url(query) else f"ytsearch{limit}:{query}"
+    with yt_dlp.YoutubeDL(options) as ydl:
+        info = ydl.extract_info(target, download=False)
+    entries = (info or {}).get("entries") or []
+    results = []
+    for entry in entries:
+        if not entry:
+            continue
+        url = entry.get("webpage_url") or entry.get("url")
+        if not url:
+            continue
+        results.append(
+            {
+                "title": entry.get("title") or "Sans titre",
+                "url": url,
+                "duration": entry.get("duration"),
+            }
+        )
+        if len(results) >= limit:
+            break
+    return results
+
+
+async def resolve(query, requester=None):
+    loop = asyncio.get_running_loop()
+    if "open.spotify.com" in query:
+        try:
+            spotted = await loop.run_in_executor(None, _spotify_sync, query)
+        except Exception:
+            spotted = None
+        if spotted:
+            query = spotted
+    return await loop.run_in_executor(None, _extract_sync, query, requester)
+
+
+async def search(query, limit=5):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _search_sync, query, limit)
+
+
+class ChannelPlayer:
+    """Joue dans un salon vocal de serveur ou dans l'appel d'un DM / groupe."""
+
+    def __init__(self, bot, channel):
+        self.bot = bot
+        self.channel = channel
+        self.queue = []
+        self.current = None
+        self.loop = "off"
+        self.volume = config.VOLUME_DEFAULT
+        self.history = []
+        self._cycle = []
+        self._skipping = False
+        self._suppress = False
+        self._seek_base = 0.0
+        self._seek_ts = 0.0
+        self._idle_task = None
+        self._guard_task = None
+        self._lock = asyncio.Lock()
+
+    @property
+    def voice(self):
+        for vc in self.bot.voice_clients:
+            channel = getattr(vc, "channel", None)
+            if channel is not None and channel.id == self.channel.id:
+                return vc
+        return None
+
+    @property
+    def is_playing(self):
+        vc = self.voice
+        return bool(vc and (vc.is_playing() or vc.is_paused()))
+
+    @property
+    def elapsed(self):
+        if self.current is None:
+            return None
+        vc = self.voice
+        if vc is None or not (vc.is_playing() or vc.is_paused()):
+            return None
+        return max(0.0, self._seek_base + (time.time() - self._seek_ts))
+
+    async def connect(self):
+        if self.voice is not None:
+            return
+        if isinstance(self.channel, discord.abc.GuildChannel):
+            await self.channel.connect(self_deaf=True, self_mute=False)
+        else:
+            await self.channel.connect(ring=config.RING)
+
+    async def keepalive(self):
+        delay = 5
+        while not self.bot.is_closed():
+            vc = self.voice
+            if vc is None or not vc.is_connected():
+                try:
+                    await self.connect()
+                    print(f"[player] 24/7 - present dans {self.channel}")
+                    delay = 5
+                except Exception as exc:
+                    print(f"[player] join impossible : {exc} ; nouvelle tentative dans {delay}s")
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 2, 60)
+                    continue
+            await asyncio.sleep(10)
+
+    async def enqueue(self, track, next_=False):
+        if next_:
+            self.queue.insert(0, track)
+        else:
+            self.queue.append(track)
+        if self.current is None and not self.is_playing:
+            await self._advance()
+
+    async def _advance(self):
+        async with self._lock:
+            skip_flag = self._skipping
+            self._skipping = False
+            if self.loop == "one" and self.current is not None and not skip_flag:
+                await self._play(self.current)
+                return
+            if not self.queue and self.loop == "all" and self._cycle:
+                self.queue.extend(self._cycle)
+                self._cycle = []
+            self.current = self.queue.pop(0) if self.queue else None
+            if self.current is not None:
+                if self.loop == "all":
+                    self._cycle.append(self.current)
+                await self._play(self.current)
+            else:
+                self._start_idle()
+
+    async def _play(self, track, start_at=0):
+        vc = self.voice
+        if vc is None:
+            self.current = None
+            self._start_idle()
+            return
+        self._cancel_idle()
+        encrypted = await self._wait_encryption(vc)
+        conn = getattr(vc, "_connection", None)
+        version = getattr(conn, "dave_protocol_version", 0)
+        session = getattr(conn, "dave_session", None)
+        solo = bool(session and len(session.get_user_ids()) <= 1)
+        if version == 0:
+            print("[player] appel sans chiffrement E2EE")
+        elif encrypted:
+            print("[player] E2EE actif")
+        elif solo:
+            print("[player] seul dans l'appel - E2EE arme des qu'un participant rejoint")
+        else:
+            print("[player] E2EE en attente - le son peut rester muet")
+
+        self._seek_base = float(start_at or 0)
+        self._seek_ts = time.time()
+        before = FFMPEG_BEFORE
+        if start_at:
+            before = f"{FFMPEG_BEFORE} -ss {int(start_at)}"
+        try:
+            source = discord.PCMVolumeTransformer(
+                discord.FFmpegPCMAudio(
+                    track.stream_url,
+                    executable=config.FFMPEG_PATH,
+                    before_options=before,
+                    options=FFMPEG_OPTS,
+                ),
+                volume=self.volume,
+            )
+            vc.play(source, after=self._after)
+            self._arm_guard()
+            if not (self.history and self.history[0] is track):
+                self.history.insert(0, track)
+                del self.history[50:]
+        except Exception as exc:
+            print(f"[player] lecture impossible : {exc}")
+            self.current = None
+            self.bot.loop.create_task(self._advance())
+
+    async def _wait_encryption(self, vc, timeout=5.0):
+        conn = getattr(vc, "_connection", None)
+        if conn is None or getattr(conn, "dave_protocol_version", 0) == 0:
+            return False
+        waited = 0.0
+        while waited < timeout:
+            if conn.can_encrypt:
+                return True
+            await asyncio.sleep(0.5)
+            waited += 0.5
+        return conn.can_encrypt
+
+    def _after(self, error):
+        if error:
+            print(f"[player] erreur flux : {error}")
+        if self._suppress:
+            self._suppress = False
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(self._advance(), self.bot.loop)
+        except Exception:
+            pass
+
+    async def skip(self, count=1):
+        count = max(1, int(count))
+        vc = self.voice
+        if vc and (vc.is_playing() or vc.is_paused()):
+            if count > 1:
+                del self.queue[: count - 1]
+            self._skipping = True
+            vc.stop()
+        else:
+            if count > 1:
+                del self.queue[: count - 1]
+            await self._advance()
+
+    async def stop(self):
+        self.queue.clear()
+        self._cycle.clear()
+        self.loop = "off"
+        self._cancel_guard()
+        vc = self.voice
+        if vc and (vc.is_playing() or vc.is_paused()):
+            self._skipping = True
+            vc.stop()
+        self.current = None
+        self._start_idle()
+
+    async def pause(self):
+        vc = self.voice
+        if vc and vc.is_playing():
+            vc.pause()
+            return True
+        return False
+
+    async def resume(self):
+        vc = self.voice
+        if vc and vc.is_paused():
+            vc.resume()
+            return True
+        return False
+
+    async def seek(self, seconds):
+        if self.current is None:
+            return False
+        vc = self.voice
+        if vc is None:
+            return False
+        self._suppress = True
+        if vc.is_playing() or vc.is_paused():
+            vc.stop()
+        await asyncio.sleep(0.2)
+        await self._play(self.current, start_at=max(0, int(seconds)))
+        return True
+
+    def set_volume(self, value):
+        self.volume = value
+        vc = self.voice
+        if vc and isinstance(vc.source, discord.PCMVolumeTransformer):
+            vc.source.volume = value
+
+    def set_loop(self, mode):
+        self.loop = mode if mode in LOOP_MODES else "off"
+        if self.loop != "all":
+            self._cycle.clear()
+        return self.loop
+
+    def shuffle(self):
+        random.shuffle(self.queue)
+        return len(self.queue)
+
+    def remove(self, index):
+        if 1 <= index <= len(self.queue):
+            return self.queue.pop(index - 1)
+        return None
+
+    def clear(self):
+        count = len(self.queue)
+        self.queue.clear()
+        return count
+
+    def _arm_guard(self):
+        self._cancel_guard()
+        self._guard_task = self.bot.loop.create_task(self._guard_watch())
+
+    def _cancel_guard(self):
+        task = self._guard_task
+        self._guard_task = None
+        if task and not task.done():
+            task.cancel()
+
+    async def _guard_watch(self):
+        misses = 0
+        while True:
+            await asyncio.sleep(5)
+            if self.current is None:
+                return
+            vc = self.voice
+            if vc is not None and vc.is_connected():
+                misses = 0
+                continue
+            misses += 1
+            print(f"[player] connexion vocale perdue ({misses})")
+            if misses < 2:
+                continue
+            try:
+                await self.connect()
+                if self.current is not None and not self.is_playing:
+                    await self._play(self.current)
+                misses = 0
+            except Exception as exc:
+                print(f"[player] reconnexion impossible : {exc}")
+
+    def _start_idle(self):
+        if config.IDLE_TIMEOUT <= 0:
+            return
+        self._cancel_idle()
+        self._idle_task = self.bot.loop.create_task(self._idle_watch())
+
+    def _cancel_idle(self):
+        task = self._idle_task
+        self._idle_task = None
+        if task and not task.done():
+            task.cancel()
+
+    async def _idle_watch(self):
+        try:
+            await asyncio.sleep(config.IDLE_TIMEOUT)
+        except asyncio.CancelledError:
+            return
+        vc = self.voice
+        if vc and not self.is_playing and self.current is None and not self.queue:
+            try:
+                await vc.disconnect()
+                print(f"[player] deconnexion inactivite : {self.channel}")
+            except Exception:
+                pass
+            self.bot.players.pop(self.channel.id, None)
+
+
+def get_player(bot, channel):
+    player = bot.players.get(channel.id)
+    if player is None:
+        player = ChannelPlayer(bot, channel)
+        bot.players[channel.id] = player
+    return player
+
+
+def find_player_in_guild(bot, guild):
+    for player in bot.players.values():
+        channel = player.channel
+        if getattr(channel, "guild", None) is not None and channel.guild.id == guild.id:
+            return player
+    return None
