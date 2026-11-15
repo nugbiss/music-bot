@@ -83,8 +83,12 @@ quand YouTube bloque. Pour récupérer YouTube en plus, trois sorties :
 
 **1. Cookies d'un compte YouTube (gratuit, le plus fiable)**
 
-1. Connecté à YouTube dans le navigateur, exporte `cookies.txt` (extension
-   « Get cookies.txt LOCALLY ») et pose-le à côté de `bot.py`.
+1. Double-clique `export-cookies.bat` : le script lit le navigateur installé
+   (Edge, Brave, Chrome, Opera), déchiffre les cookies YouTube et écrit
+   `cookies.txt` à côté de `bot.py`. Sans extension. Si le navigateur n'a pas de
+   session YouTube ouverte, il le dit.
+   Variante manuelle : connecté à YouTube, exporte `cookies.txt` avec
+   l'extension « Get cookies.txt LOCALLY ».
 2. Double-clique `cookies.bat` → la valeur base64 est copiée dans le
    presse-papier (et écrite dans `YTDL_COOKIES_B64.txt`).
 3. Render → Environment → `YTDL_COOKIES_B64` = colle la valeur.
@@ -141,6 +145,8 @@ Logs Render utiles : `[bot] opus : charge`, `[bot] dave : correctif actif`,
 | `dave_fix.py` | correctif chiffrement vocal DAVE |
 | `modes.py` | état du mode musique |
 | `setup.py` | installation Windows (FFmpeg, libopus, deps) |
+| `cookies.py` | installation des cookies YouTube déposés dans Discord |
+| `cookies_export.py` | extraction des cookies YouTube depuis le navigateur local |
 | `cookies_to_b64.py` | encode `cookies.txt` pour Render (`cookies.bat`) |
 | `diag.py` | état audio pour `!diag` |
 | `taps.py` | compteur de paquets audio, capture des erreurs |
