@@ -8,3 +8,5 @@ __pycache__/
 .DS_Store
 ffmpeg/
 *.zip
+cookies.txt
+YTDL_COOKIES_B64.txt

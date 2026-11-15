@@ -83,38 +83,42 @@ def _opts(flat=False, clients=None):
 
 
 def _extract_sync(query, requester):
-    """Résout une requête en flux audio, avec rotation de clients YouTube.
+    """Résout une requête en flux audio, YouTube puis SoundCloud.
 
     Entrée : query (titre ou URL), requester (auteur de la commande).
     Sortie : Track jouable ; lève RuntimeError avec la dernière erreur sinon.
     """
-    target = query if _is_url(query) else f"ytsearch1:{query}"
+    if _is_url(query):
+        targets = [query]
+    else:
+        targets = [f"ytsearch1:{query}", f"scsearch1:{query}"]
     last_error = "aucun resultat"
 
-    for clients in CLIENT_SETS:
-        try:
-            with yt_dlp.YoutubeDL(_opts(clients=clients)) as ydl:
-                info = ydl.extract_info(target, download=False)
-            if not info:
-                raise RuntimeError("aucun resultat")
-            if "entries" in info:
-                entries = [entry for entry in info["entries"] if entry]
-                if not entries:
+    for target in targets:
+        for clients in CLIENT_SETS:
+            try:
+                with yt_dlp.YoutubeDL(_opts(clients=clients)) as ydl:
+                    info = ydl.extract_info(target, download=False)
+                if not info:
                     raise RuntimeError("aucun resultat")
-                info = entries[0]
-            stream = info.get("url")
-            if not stream:
-                raise RuntimeError("flux audio introuvable")
-            return Track(
-                title=info.get("title") or query,
-                stream_url=stream,
-                webpage_url=info.get("webpage_url") or (query if _is_url(query) else None),
-                duration=info.get("duration"),
-                requester=requester,
-                uploader=info.get("uploader"),
-            )
-        except Exception as exc:
-            last_error = str(exc).splitlines()[0][:200]
+                if "entries" in info:
+                    entries = [entry for entry in info["entries"] if entry]
+                    if not entries:
+                        raise RuntimeError("aucun resultat")
+                    info = entries[0]
+                stream = info.get("url")
+                if not stream:
+                    raise RuntimeError("flux audio introuvable")
+                return Track(
+                    title=info.get("title") or query,
+                    stream_url=stream,
+                    webpage_url=info.get("webpage_url") or (query if _is_url(query) else None),
+                    duration=info.get("duration"),
+                    requester=requester,
+                    uploader=info.get("uploader"),
+                )
+            except Exception as exc:
+                last_error = str(exc).splitlines()[0][:200]
 
     raise RuntimeError(last_error)
 
@@ -132,40 +136,44 @@ def _spotify_sync(url):
 
 
 def _search_sync(query, limit):
-    """Liste les résultats d'une recherche, avec rotation de clients YouTube.
+    """Liste les résultats d'une recherche, YouTube puis SoundCloud.
 
     Entrée : query (titre ou URL), limit (nombre de résultats).
     Sortie : liste de dicts {title, url, duration}.
     """
-    target = query if _is_url(query) else f"ytsearch{limit}:{query}"
+    if _is_url(query):
+        targets = [query]
+    else:
+        targets = [f"ytsearch{limit}:{query}", f"scsearch{limit}:{query}"]
     last_error = "aucun resultat"
 
-    for clients in CLIENT_SETS:
-        try:
-            with yt_dlp.YoutubeDL(_opts(flat=True, clients=clients)) as ydl:
-                info = ydl.extract_info(target, download=False)
-            entries = (info or {}).get("entries") or []
-            results = []
-            for entry in entries:
-                if not entry:
-                    continue
-                url = entry.get("webpage_url") or entry.get("url")
-                if not url:
-                    continue
-                results.append(
-                    {
-                        "title": entry.get("title") or "Sans titre",
-                        "url": url,
-                        "duration": entry.get("duration"),
-                    }
-                )
-                if len(results) >= limit:
-                    break
-            if results:
-                return results
-            last_error = "aucun resultat"
-        except Exception as exc:
-            last_error = str(exc).splitlines()[0][:200]
+    for target in targets:
+        for clients in CLIENT_SETS:
+            try:
+                with yt_dlp.YoutubeDL(_opts(flat=True, clients=clients)) as ydl:
+                    info = ydl.extract_info(target, download=False)
+                entries = (info or {}).get("entries") or []
+                results = []
+                for entry in entries:
+                    if not entry:
+                        continue
+                    url = entry.get("webpage_url") or entry.get("url")
+                    if not url:
+                        continue
+                    results.append(
+                        {
+                            "title": entry.get("title") or "Sans titre",
+                            "url": url,
+                            "duration": entry.get("duration"),
+                        }
+                    )
+                    if len(results) >= limit:
+                        break
+                if results:
+                    return results
+                last_error = "aucun resultat"
+            except Exception as exc:
+                last_error = str(exc).splitlines()[0][:200]
 
     raise RuntimeError(last_error)
 

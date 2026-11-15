@@ -77,18 +77,22 @@ ne change.
 ### Si YouTube refuse les recherches sur Render
 
 Les IP de datacenter déclenchent « Sign in to confirm you're not a bot ». Le bot
-essaie déjà deux jeux de clients YouTube, puis affiche l'erreur exacte dans
-Discord. Trois sorties possibles, dans l'ordre de simplicité.
+essaie deux jeux de clients YouTube, puis **bascule automatiquement sur
+SoundCloud** : `!play` et `!search` continuent de fonctionner depuis Render même
+quand YouTube bloque. Pour récupérer YouTube en plus, trois sorties :
 
 **1. Cookies d'un compte YouTube (gratuit, le plus fiable)**
 
 1. Connecté à YouTube dans le navigateur, exporte `cookies.txt` (extension
-   « Get cookies.txt LOCALLY »).
-2. Encode-le en base64 :
-   `python -c "import base64;print(base64.b64encode(open('cookies.txt','rb').read()).decode())"`
-3. Render → Environment → `YTDL_COOKIES_B64` = la chaîne obtenue.
+   « Get cookies.txt LOCALLY ») et pose-le à côté de `bot.py`.
+2. Double-clique `cookies.bat` → la valeur base64 est copiée dans le
+   presse-papier (et écrite dans `YTDL_COOKIES_B64.txt`).
+3. Render → Environment → `YTDL_COOKIES_B64` = colle la valeur.
 4. Manual Deploy. `config.py` écrit le fichier dans le dossier temporaire au
    démarrage et yt-dlp l'utilise.
+
+`cookies.txt` et `YTDL_COOKIES_B64.txt` sont dans `.gitignore` — ils ne partent
+jamais sur GitHub.
 
 **2. Proxy sortant (autre IP pour YouTube)**
 
@@ -112,3 +116,4 @@ sont pas une option — testées hors service ou en 403.
 | `dave_fix.py` | correctif chiffrement vocal DAVE |
 | `modes.py` | état du mode musique |
 | `setup.py` | installation Windows (FFmpeg, libopus, deps) |
+| `cookies_to_b64.py` | encode `cookies.txt` pour Render (`cookies.bat`) |
