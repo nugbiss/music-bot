@@ -33,23 +33,39 @@ async def install_from_message(message):
     return False
 
 
-async def restore(client, max_channels=20):
-    """Au demarrage : cherche un cookies.txt epingle."""
+async def _scan_channel(channel, history_limit):
+    try:
+        for message in await channel.pins():
+            if await install_from_message(message):
+                print(f"[cookies] installes depuis {channel} (epingle)")
+                return True
+    except Exception:
+        pass
+    try:
+        async for message in channel.history(limit=history_limit):
+            if message.attachments and await install_from_message(message):
+                print(f"[cookies] installes depuis {channel} (historique)")
+                return True
+    except Exception:
+        pass
+    return False
+
+
+async def restore(client, max_channels=20, history_limit=50):
+    """Au demarrage : relit groupes prives, DM et salons a la recherche du fichier."""
     if _RESTORED["done"] or config.COOKIES_PATH:
         return False
     _RESTORED["done"] = True
-    seen = 0
+    channels = list(getattr(client, "private_channels", []))
     for guild in client.guilds:
-        for channel in getattr(guild, "text_channels", []):
-            if seen >= max_channels:
-                return False
-            seen += 1
-            try:
-                pins = await channel.pins()
-            except Exception:
-                continue
-            for message in pins:
-                if await install_from_message(message):
-                    print(f"[cookies] installes depuis {channel} (message epingle)")
-                    return True
+        channels.extend(getattr(guild, "text_channels", []))
+    seen = 0
+    for channel in channels:
+        if seen >= max_channels:
+            return False
+        if not hasattr(channel, "history"):
+            continue
+        seen += 1
+        if await _scan_channel(channel, history_limit):
+            return True
     return False

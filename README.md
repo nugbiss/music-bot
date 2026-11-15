@@ -98,6 +98,13 @@ quand YouTube bloque. Pour récupérer YouTube en plus, trois sorties :
 `cookies.txt` et `YTDL_COOKIES_B64.txt` sont dans `.gitignore` — ils ne partent
 jamais sur GitHub.
 
+**Dépôt direct dans Discord (sans variable Render)** — marche aussi en groupe
+privé / DM, là où il n'y a pas de salon : glisse `cookies.txt` en pièce jointe
+dans la conversation où est le bot. Réponse `🍪 Cookies YouTube charges`, le
+fichier est branché à la seconde. Au redémarrage, le bot relit les épinglés puis
+les 50 derniers messages des groupes privés, DM et salons : le fichier se
+réinstalle seul sans variable d'environnement.
+
 **2. Proxy sortant (autre IP pour YouTube)**
 
 Render → Environment → `PROXY_URL` = `http://user:pass@host:port` ou
