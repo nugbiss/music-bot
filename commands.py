@@ -94,6 +94,18 @@ def _queue_total(queue, current=None):
     return seconds
 
 
+def _short_error(exc):
+    """Résume une exception en une ligne lisible pour Discord.
+
+    Entrée : exception levée par yt-dlp ou le réseau.
+    Sortie : chaîne courte ; signale le blocage d'IP quand cookies absents.
+    """
+    text = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+    if "Sign in" in text or "not a bot" in text or "reloaded" in text:
+        return text + " — YouTube bloque l'IP du serveur, ajoute YTDL_COOKIES_B64"
+    return text[:180]
+
+
 class Music(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -133,7 +145,7 @@ class Music(commands.Cog):
         try:
             track = await resolve(query, ctx.author)
         except Exception as exc:
-            return await note.edit(content=f"❌ Rien trouve pour `{query[:100]}` : `{exc}`")
+            return await note.edit(content=f"❌ Rien trouve pour `{query[:100]}` : `{_short_error(exc)}`")
         was_idle = player.current is None and not player.is_playing and not player.queue
         await player.enqueue(track, next_=next_)
         duration = fmt_duration(track.duration)
@@ -167,7 +179,7 @@ class Music(commands.Cog):
         try:
             results = await search(query, 5)
         except Exception as exc:
-            return await note.edit(content=f"❌ Recherche impossible : `{exc}`")
+            return await note.edit(content=f"❌ Recherche impossible : `{_short_error(exc)}`")
         if not results:
             return await note.edit(content=f"❌ Aucun resultat pour `{query[:100]}`")
         self._searches[ctx.channel.id] = (results, time.time())

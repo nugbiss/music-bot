@@ -74,6 +74,20 @@ doit ouvrir un port : le `Dockerfile` règle les deux, `health.py` répond sur `
 `health.py` ouvre un port seulement si la variable `PORT` existe : en local, rien
 ne change.
 
+### Si YouTube refuse les recherches sur Render
+
+Les IP de datacenter déclenchent « Sign in to confirm you're not a bot ». Le bot
+essaie déjà deux jeux de clients YouTube, puis affiche l'erreur exacte dans
+Discord. Pour passer au-delà, il faut des cookies d'un compte YouTube :
+
+1. Connecté à YouTube dans le navigateur, exporte `cookies.txt` (extension
+   « Get cookies.txt LOCALLY »).
+2. Encode-le en base64 :
+   `python -c "import base64;print(base64.b64encode(open('cookies.txt','rb').read()).decode())"`
+3. Render → Environment → nouvelle variable `YTDL_COOKIES_B64` = la chaîne obtenue.
+4. Manual Deploy. `config.py` écrit le fichier dans le dossier temporaire au
+   démarrage et yt-dlp l'utilise.
+
 ## Fichiers
 
 | fichier | rôle |

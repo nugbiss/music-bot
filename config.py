@@ -1,5 +1,7 @@
+import base64
 import os
 import shutil
+import tempfile
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -43,6 +45,27 @@ ALLOWED_IDS = {
 }
 
 _LOCAL_FFMPEG = os.path.join(_HERE, "ffmpeg", "bin", "ffmpeg.exe")
+
+
+def _write_cookies():
+    """Décode YTDL_COOKIES_B64 vers un cookies.txt temporaire.
+
+    Entrée : variable d'environnement YTDL_COOKIES_B64 (base64 du cookies.txt).
+    Sortie : chemin du fichier écrit, ou None si absente/illisible.
+    """
+    raw = os.getenv("YTDL_COOKIES_B64", "").strip()
+    if not raw:
+        return None
+    path = os.path.join(tempfile.gettempdir(), "ytdl-cookies.txt")
+    try:
+        with open(path, "wb") as handle:
+            handle.write(base64.b64decode(raw))
+        return path
+    except Exception:
+        return None
+
+
+COOKIES_PATH = _write_cookies()
 
 
 def _resolve_ffmpeg():
